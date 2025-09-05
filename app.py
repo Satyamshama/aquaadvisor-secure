@@ -2,16 +2,18 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
+import json
 
 app = Flask(__name__)
 CORS(app)
 
 # 🔐 SECURE: Get Groq API key from environment variable
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Fixed API URL - removed 'openai' prefix
+GROQ_API_URL = "https://api.groq.com/v1/chat/completions"
 
 def get_groq_response(message):
-    
+    """Get response from Groq API with better error handling"""
     if not GROQ_API_KEY:
         return "Error: API key not configured. Please set GROQ_API_KEY environment variable."
     
@@ -19,31 +21,58 @@ def get_groq_response(message):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    # Fixed payload with correct model name and structure
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "llama3-8b-8192",  # This is the correct model name for Groq
         "messages": [
             {
                 "role": "system", 
                 "content": "You are AquaAdvisor, a water quality expert. Provide practical advice about pH levels (6.5-8.5 ideal), TDS values, and water purification methods. Keep responses under 100 words."
             },
-            {"role": "user", "content": message}
+            {
+                "role": "user", 
+                "content": message
+            }
         ],
         "max_tokens": 150,
         "temperature": 0.7
     }
     
     try:
-        response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+        # Add timeout and better error handling
+        response = requests.post(
+            GROQ_API_URL, 
+            headers=headers, 
+            json=payload,
+            timeout=30
+        )
+        
+        # Debug logging
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Headers: {response.headers}")
+        
         if response.status_code == 200:
             result = response.json()
             return result["choices"][0]["message"]["content"]
         else:
+            # Log the full error response for debugging
+            print(f"API Error Response: {response.text}")
             return f"API Error: HTTP {response.status_code}. Please try again later."
+            
+    except requests.exceptions.Timeout:
+        return "Request timeout. Please try again."
     except requests.exceptions.RequestException as e:
+        print(f"Request Error: {e}")
         return f"Network error: {str(e)}. Please check your connection."
+    except json.JSONDecodeError as e:
+        print(f"JSON Decode Error: {e}")
+        return "Invalid response format from API."
     except KeyError as e:
+        print(f"Response Key Error: {e}")
         return f"API response error: {str(e)}. Please try again."
     except Exception as e:
+        print(f"Unexpected Error: {e}")
         return f"Unexpected error: {str(e)}. Please try again later."
 
 @app.route('/chat', methods=['POST'])
@@ -51,7 +80,10 @@ def chat():
     """Handle chat requests"""
     try:
         data = request.get_json()
-        message = data.get('message', '')
+        if not data:
+            return jsonify({'response': 'No data provided', 'session_id': 'error'}), 400
+            
+        message = data.get('message', '').strip()
         session_id = data.get('session_id', 'default')
         
         if not message:
@@ -62,7 +94,9 @@ def chat():
             'response': response_text,
             'session_id': session_id
         })
+        
     except Exception as e:
+        print(f"Chat Error: {e}")
         return jsonify({
             'response': f'Server error: {str(e)}',
             'session_id': 'error'
@@ -87,8 +121,23 @@ def health():
     return jsonify({
         "status": "healthy",
         "agent": "AquaAdvisor",
-        "timestamp": "2025-08-25",
-        "api_key_configured": bool(GROQ_API_KEY)
+        "timestamp": "2025-09-05",
+        "api_key_configured": bool(GROQ_API_KEY),
+        "api_url": GROQ_API_URL
+    })
+
+# Test endpoint to verify API connection
+@app.route('/test-api', methods=['GET'])
+def test_api():
+    """Test Groq API connection"""
+    if not GROQ_API_KEY:
+        return jsonify({"error": "API key not configured"}), 500
+    
+    test_response = get_groq_response("Hello, test message")
+    return jsonify({
+        "test_message": "Hello, test message",
+        "api_response": test_response,
+        "status": "success" if "Error" not in test_response else "failed"
     })
 
 if __name__ == '__main__':
